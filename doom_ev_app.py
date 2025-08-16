@@ -7,11 +7,12 @@
 # - Per-level and per-run EVs (uniques / commons / both)
 # - Cumulative unique chance across a run
 # - Bank-now threshold after your chosen end level, given next-level success chance
+# - NEW: Runs-per-hour input and hourly EV / unique odds
 #
 # Usage:
 #   streamlit run doom_ev_app.py
 #
-# Requires: streamlit, requests
+# Requires: streamlit, requests, pandas
 
 import math
 import re
@@ -28,7 +29,7 @@ st.set_page_config(page_title="Doom EV & Bank Threshold (OSRS)", layout="wide")
 # -----------------------------
 MAPPING_URL = "https://prices.runescape.wiki/api/v1/osrs/mapping"
 LATEST_URL  = "https://prices.runescape.wiki/api/v1/osrs/latest"
-USER_AGENT  = "doom-ev-tool/1.0 (contact: put-your-email-or-discord-here)"  # Please customize
+USER_AGENT  = "doom-ev-tool/1.1 (contact: put-your-email-or-discord-here)"  # Please customize
 
 # -----------------------------
 # Delve mechanics/config
@@ -103,7 +104,6 @@ FORCE_ZERO_IF_MISSING = {
     "Sun-kissed bones",
     "Clue scroll (elite)",
     "Tooth half of key (moon key)",
-    # If other items are not on GE, they will default to 0 but can be overridden.
 }
 
 # -----------------------------
@@ -185,7 +185,7 @@ def get_prices_for(names: List[str], price_type: str, overrides: Dict[str, int])
             if entry:
                 price = price_picker(entry, price_type)
         if price is None:
-            # Default to 0 if missing or Not sold:
+            # Default to 0 if missing or Not sold
             price = 0 if (name in FORCE_ZERO_IF_MISSING) else 0
         out[name] = int(price or 0)
 
@@ -216,8 +216,9 @@ def ev_uniques_for_level(level: int, prices: Dict[str, int], mode: str) -> float
     return p_sum
 
 def ev_commons_for_level(level: int, prices: Dict[str, int], mode: str, include_tears: bool) -> float:
+    # Commons EV excludes tears if include_tears is False; tears are *only* part of commons/both modes.
     if mode == "uniques":
-        return (guaranteed_tears(level) * prices.get("Demon tear", 0)) if include_tears else 0.0
+        return 0.0
     ev = 0.0
     # One roll on the regular table
     for it in COMMON_DROPS:
@@ -239,6 +240,13 @@ def cumulative_unique_prob_over_run(start_level: int, end_level: int) -> float:
         p = per_level_unique_any_prob(L)
         fail *= (1.0 - p)
     return 1.0 - fail
+
+def expected_uniques_per_run(start_level: int, end_level: int) -> float:
+    """Linearity of expectation: sum of per-level p(any unique on that level)."""
+    total = 0.0
+    for L in range(start_level, end_level + 1):
+        total += per_level_unique_any_prob(L)
+    return total
 
 def expected_runs_to_unique(start_level: int, end_level: int) -> Optional[float]:
     p = cumulative_unique_prob_over_run(start_level, end_level)
@@ -283,8 +291,8 @@ with st.sidebar:
                                                "commons":"Non-uniques only"}[s],
                         index=0)
 
-    include_tears = st.checkbox("Include guaranteed Demon tears in 'commons' EV", value=True,
-                                help="If unchecked, guaranteed tears are excluded from EV unless mode is 'both'.")
+    include_tears = st.checkbox("Include guaranteed Demon tears (commons/both)", value=True,
+                                help="If unchecked, guaranteed tears are excluded from EV. Tears are not included when mode = 'uniques'.")
 
     price_type = st.selectbox("Price type", options=["low", "mid", "high"], index=0,
                               help="Use low, mid (average), or high from OSRS GE latest.")
@@ -293,6 +301,9 @@ with st.sidebar:
     st.subheader("Next-level success chance")
     success_pct = st.slider(f"Success chance for level {end_level+1} if you continue", 0, 100, 50, 1)
     success_next = success_pct / 100.0
+
+    st.subheader("Throughput")
+    runs_per_hour = st.number_input("Runs per hour (completed full runs of your selected range)", min_value=1, max_value=60, value=2, step=1)
 
     st.subheader("Overrides (optional)")
     st.caption("Use these if an item is Not sold / missing on GE. Set to 0 to disable override.")
@@ -357,21 +368,46 @@ st.dataframe(df_show, use_container_width=True)
 # Run totals
 ev_run_total = ev_tot_uni + ev_tot_com
 p_unique_run = cumulative_unique_prob_over_run(int(start_level), int(end_level))
+exp_uniques_run = expected_uniques_per_run(int(start_level), int(end_level))
 runs_to_unique = expected_runs_to_unique(int(start_level), int(end_level))
 
 colA, colB, colC = st.columns(3)
 with colA:
-    st.metric("EV uniques (run total)", f"{int(round(ev_tot_uni)):,} gp")
+    st.metric("EV uniques (per run)", f"{int(round(ev_tot_uni)):,} gp")
 with colB:
-    st.metric("EV commons (run total)", f"{int(round(ev_tot_com)):,} gp")
+    st.metric("EV commons (per run)", f"{int(round(ev_tot_com)):,} gp")
 with colC:
-    st.metric("EV total (run)", f"{int(round(ev_run_total)):,} gp")
+    st.metric("EV total (per run)", f"{int(round(ev_run_total)):,} gp")
 
-colD, colE = st.columns(2)
+colD, colE, colF = st.columns(3)
 with colD:
-    st.metric("P(≥1 unique in run)", f"{p_unique_run:.2%}")
+    st.metric("P(≥1 unique per run)", f"{p_unique_run:.2%}")
 with colE:
+    st.metric("Expected uniques per run", f"{exp_uniques_run:.4f}")
+with colF:
     st.metric("Expected runs to a unique", "N/A" if runs_to_unique is None else f"{runs_to_unique:.2f}")
+
+# Hourly stats
+st.subheader("Hourly stats (based on runs per hour)")
+ev_uni_hour = ev_tot_uni * runs_per_hour
+ev_com_hour = ev_tot_com * runs_per_hour
+ev_total_hour = ev_run_total * runs_per_hour
+p_unique_hour = 1.0 - (1.0 - p_unique_run) ** runs_per_hour
+exp_uniques_hour = exp_uniques_run * runs_per_hour
+
+colH1, colH2, colH3 = st.columns(3)
+with colH1:
+    st.metric("EV uniques per hour", f"{int(round(ev_uni_hour)):,} gp/h")
+with colH2:
+    st.metric("EV commons per hour", f"{int(round(ev_com_hour)):,} gp/h")
+with colH3:
+    st.metric("EV total per hour", f"{int(round(ev_total_hour)):,} gp/h")
+
+colH4, colH5 = st.columns(2)
+with colH4:
+    st.metric("P(≥1 unique in an hour)", f"{p_unique_hour:.2%}")
+with colH5:
+    st.metric("Expected uniques per hour", f"{exp_uniques_hour:.4f}")
 
 # Bank threshold
 v_star = bank_threshold_after_end(int(end_level), prices, mode, include_tears, success_next, int(death_fee))
@@ -401,4 +437,4 @@ with st.expander("Price details (for troubleshooting)", expanded=False):
 
 st.caption("Notes: Cloth is valued as Confliction gauntlets. Dom pet excluded. "
            "Items missing/Not sold on GE are treated as 0 unless overridden. "
-           "9+ depths reuse level‑9 rates.")
+           "9+ depths reuse level‑9 rates. Uniques per run/hour are expectations; multiple uniques can occur across levels in a run.")
