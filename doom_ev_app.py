@@ -1,3 +1,4 @@
+
 # doom_ev_app.py
 # Streamlit UI for Doom of Mokhaiotl EV & Bank-Threshold Calculator
 #
@@ -7,12 +8,13 @@
 # - Cumulative unique chance across a run
 # - Bank-now threshold after your chosen end level, given next-level success chance
 # - Runs-per-hour input and hourly EV/unique odds
-# - NEW: Per-level "when to bank" simulation using decaying success per level
+# - Per-level "when to bank" simulation using decaying success per level
+# - Auto-refresh every 5 minutes
 #
 # Usage:
 #   streamlit run doom_ev_app.py
 #
-# Requires: streamlit, requests, pandas
+# Requires: streamlit, requests, pandas, streamlit-autorefresh
 
 import io
 import math
@@ -22,15 +24,19 @@ from typing import Dict, List, Tuple, Optional
 import requests
 import streamlit as st
 import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Doom EV & Bank Threshold (OSRS)", layout="wide")
+
+# Auto-refresh the app every 5 minutes (300,000 ms)
+st_autorefresh(interval=300_000, key="price_refresh_5min")
 
 # -----------------------------
 # OSRS Wiki GE API endpoints
 # -----------------------------
 MAPPING_URL = "https://prices.runescape.wiki/api/v1/osrs/mapping"
 LATEST_URL  = "https://prices.runescape.wiki/api/v1/osrs/latest"
-USER_AGENT  = "doom-ev-tool/1.2 (contact: put-your-email-or-discord-here)"  # Please customize
+USER_AGENT  = "doom-ev-tool/1.3 (contact: put-your-email-or-discord-here)"  # Please customize
 
 # -----------------------------
 # Delve mechanics/config
@@ -128,13 +134,13 @@ def expected_qty_at_level(q3_range: Tuple[int, int], level: int) -> float:
         total += qn
     return total / count
 
-@st.cache_data(ttl=60*5, show_spinner=False)
+@st.cache_data(ttl=60*10, show_spinner=False)  # 10 min
 def fetch_mapping() -> List[dict]:
     r = requests.get(MAPPING_URL, headers={"User-Agent": USER_AGENT}, timeout=15)
     r.raise_for_status()
     return r.json()
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60*5, show_spinner=False)   # 5 min to align with auto-refresh
 def fetch_latest_prices() -> dict:
     r = requests.get(LATEST_URL, headers={"User-Agent": USER_AGENT}, timeout=15)
     r.raise_for_status()
@@ -321,7 +327,7 @@ def gp(x: float) -> str:
 # -----------------------------
 
 st.title("Doom of Mokhaiotl — EV & Bank Threshold Calculator")
-st.caption("Live OSRS Wiki GE prices • Cloth valued as Confliction gauntlets • Dom pet excluded")
+st.caption("Live OSRS Wiki GE prices • Cloth valued as Confliction gauntlets • Dom pet excluded • Auto-refreshes every 5 minutes")
 
 with st.sidebar:
     st.header("Run setup")
@@ -533,4 +539,5 @@ with tab4:
 st.caption("Notes: Cloth is valued as Confliction gauntlets. Dom pet excluded. "
            "Items missing/Not sold on GE are treated as 0 unless overridden. "
            "9+ depths reuse level‑9 rates. Uniques per run/hour are expectations; multiple uniques can occur across levels in a run. "
-           "Simulation uses a one‑level lookahead at each step (you re‑evaluate after every clear).")
+           "Simulation uses a one‑level lookahead at each step (you re‑evaluate after every clear). "
+           "Auto-refresh is set to 5 minutes; cache TTL for prices is also 5 minutes.")
